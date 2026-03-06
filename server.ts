@@ -2,8 +2,12 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
+import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import session from "express-session";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 declare module "express-session" {
   interface SessionData {
@@ -13,7 +17,7 @@ declare module "express-session" {
 
 const db = new Database("trading_v2.db");
 
-// Initialize database with multi-user support
+// Initialize database
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,15 +45,21 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+  
+  // Health check for Railway
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", message: "Server is running" });
+  });
+
   app.use(session({
     secret: "trading-portfolio-secret",
     resave: false,
     saveUninitialized: false,
     cookie: { 
-      secure: true,
-      sameSite: 'none',
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? 'none' : 'lax',
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      maxAge: 24 * 60 * 60 * 1000 
     }
   }));
 
@@ -71,7 +81,6 @@ async function startServer() {
       const result = db.prepare("INSERT INTO users (username, password) VALUES (?, ?)").run(username, hashedPassword);
       const userId = result.lastInsertRowid;
       
-      // Create default settings
       db.prepare("INSERT INTO settings (user_id, initial_capital) VALUES (?, ?)").run(userId, 1000);
       
       req.session.userId = userId as number;
@@ -83,13 +92,16 @@ async function startServer() {
 
   app.post("/api/auth/login", async (req, res) => {
     const { username, password } = req.body;
-    const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
-    
-    if (user && await bcrypt.compare(password, user.password)) {
-      req.session.userId = user.id;
-      res.json({ success: true, userId: user.id });
-    } else {
-      res.status(401).json({ error: "Invalid credentials" });
+    try {
+      const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
+      if (user && await bcrypt.compare(password, user.password)) {
+        req.session.userId = user.id;
+        res.json({ success: true, userId: user.id });
+      } else {
+        res.status(401).json({ error: "Invalid credentials" });
+      }
+    } catch (e) {
+      res.status(500).json({ error: "Database error" });
     }
   });
 
@@ -108,17 +120,14 @@ async function startServer() {
     }
   });
 
-  // Protected Data Routes
+  // Data Routes
   app.get("/api/stats", requireAuth, (req, res) => {
     const userId = req.session.userId;
     const settings = db.prepare("SELECT initial_capital FROM settings WHERE user_id = ?").get(userId) as any;
     const initial = settings?.initial_capital || 1000;
-    
     const totalProfit = db.prepare("SELECT SUM(amount) as total FROM daily_profits WHERE user_id = ?").get(userId).total || 0;
-    
     const currentMonth = new Date().toISOString().slice(0, 7);
     const monthlyProfit = db.prepare("SELECT SUM(amount) as total FROM daily_profits WHERE user_id = ? AND date LIKE ?").get(userId, `${currentMonth}%`).total || 0;
-    
     const today = new Date().toISOString().slice(0, 10);
     const dailyProfit = db.prepare("SELECT amount FROM daily_profits WHERE user_id = ? AND date = ?").get(userId, today)?.amount || 0;
 
@@ -164,7 +173,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Vite middleware for development
+  // Vite middleware
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -179,8 +188,10 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("Failed to start server:", err);
+});
