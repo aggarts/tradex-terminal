@@ -56,12 +56,18 @@ async function startServer() {
     resave: false,
     saveUninitialized: false,
     cookie: { 
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? 'none' : 'lax',
+      secure: true, // Required for AI Studio iframe
+      sameSite: 'none', // Required for AI Studio iframe
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000 
     }
   }));
+
+  // Add request logging for debugging
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
 
   // Auth Middleware
   const requireAuth = (req: any, res: any, next: any) => {
